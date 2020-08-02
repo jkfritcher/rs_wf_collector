@@ -1,0 +1,23 @@
+[package]
+name = "rs_wf_collector"
+description = "UDP and WebSocket data collector for WeatherFlow Smart Weather stations."
+version = "0.1.0"
+authors = ["Jason Fritcher <jkf@wolfnet.org>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "0.2", features = ["full"] }
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = "1.0"
+log = "0.4"
+simple_logger = "1.6"
+tungstenite = "0.10"
+tokio-tungstenite = { version = "0.10", features = ["connect","tls"] }
+tokio-native-tls = "0.1"
+chrono = "0.4"
+futures = "0.3"
+futures-util = "0.3"
+url = "2.1"
