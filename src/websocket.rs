@@ -20,8 +20,7 @@ use futures_util::{SinkExt, StreamExt};
 
 use serde_json::json;
 
-use crate::WF_DEVICE_ID;
-use crate::common::{WFMessage, WFSource, WFAuthMethod};
+use crate::common::{WFMessage, WFSource, WFAuthMethod, WsArgs};
 use WFAuthMethod::{APIKEY, AUTHTOKEN};
 
 #[allow(unused_imports)]
@@ -153,14 +152,12 @@ async fn websocket_send_listen_start(ws_stream: &mut WebSocketStream<MaybeTlsStr
     Ok(())
 }
 
-pub async fn websocket_collector(collector_tx: mpsc::UnboundedSender<WFMessage>,
-                                 auth_method: WFAuthMethod
-) {
-    let url_str = match auth_method {
+pub async fn websocket_collector(collector_tx: mpsc::UnboundedSender<WFMessage>, ws_args: WsArgs) {
+    let url_str = match ws_args.auth_method {
         APIKEY(key) => { format!("{}?api_key={}", WF_WS_URL, key) },
         AUTHTOKEN(token) => { format!("{}?token={}", WF_WS_URL, token) },
     };
-    let device_id = WF_DEVICE_ID; // TODO Lookup device id via REST and station id
+    let device_id = ws_args.device_id.unwrap(); // TODO Lookup device id via REST and station id
 
     let mut reconnect_delay: u32 = 0;
     loop {
