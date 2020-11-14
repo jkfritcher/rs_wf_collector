@@ -1,6 +1,4 @@
-use std::{
-    net::IpAddr,
-};
+use std::net::IpAddr;
 
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;

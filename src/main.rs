@@ -1,8 +1,4 @@
-use std::{
-    error::Error,
-    net::IpAddr,
-    str,
-};
+use std::{error::Error, net::IpAddr, str, sync::atomic::Ordering};
 
 use tokio::sync::mpsc;
 
@@ -12,22 +8,20 @@ use serde_json::Value;
 
 #[allow(unused_imports)]
 use log::{trace, debug, info, warn, error};
-use simple_logger;
 
 mod common;
 mod mqtt;
 mod udp;
 mod websocket;
 use common::{WFMessage, WFAuthMethod, WFSource, MqttArgs, WsArgs};
-use mqtt::{mqtt_publisher,mqtt_publish_raw_message};
+use mqtt::{mqtt_publisher,mqtt_publish_message,mqtt_publish_raw_message};
 use udp::udp_collector;
-use websocket::websocket_collector;
+use websocket::{websocket_collector,get_ws_connected};
 
 // WeatherFlow constants
 const WF_API_KEY: &str = "20c70eae-e62f-4d3b-b3a4-8586e90f3ac8";
 const WF_AUTH_TOKEN: &str = "12345678-1234-1234-1234-123456789abc";
 const WF_STATION_ID: u32 = 690;
-const WF_DEVICE_ID: u32 = 1110;
 
 // MQTT args - to be replaced by cli args
 const MQTT_HOST: &str = "10.1.1.1";
@@ -49,20 +43,23 @@ fn get_hub_sn_from_msg(msg_obj: &serde_json::Value) -> Option<&str> {
 async fn message_consumer(mut collector_rx: mpsc::UnboundedReceiver<WFMessage>,
                           publisher_tx: mpsc::UnboundedSender<(String, String)>,
                           ignored_msg_types: Vec<String>) {
+    // Get WS connected reference
+    let ws_connected = get_ws_connected();
+
     // Wait for messages from the consumers to process
     while let Some(msg) = collector_rx.recv().await {
         let msg_str = match str::from_utf8(&msg.message) {
             Err(err) => {
                 error!("Error in str::from_utf8, ignoring message: {}", err);
                 continue;
-            },
+            }
             Ok(msg) => msg,
         };
         let msg_json: Value = match serde_json::from_str(&msg_str) {
             Err(err) => {
                 error!("Error parsing json, skipping message: {}", err);
                 continue;
-            },
+            }
             Ok(msg) => msg,
         };
         if !msg_json.is_object() {
@@ -80,7 +77,8 @@ async fn message_consumer(mut collector_rx: mpsc::UnboundedReceiver<WFMessage>,
         };
 
         // Ignore message types we're not interested in
-        if ignored_msg_types.iter().any(|x| x == &msg_type ) {
+        if msg_type.ends_with("_debug") || msg_type == "ack" ||
+           ignored_msg_types.iter().any(|x| x == msg_type ) {
             continue;
         }
 
@@ -96,9 +94,47 @@ async fn message_consumer(mut collector_rx: mpsc::UnboundedReceiver<WFMessage>,
         let topic_base = format!("weatherflow/{}", hub_sn);
 
         // Publish raw message to mqtt
-        mqtt_publish_raw_message(&publisher_tx, topic_base, msg.source, &msg_str);
+        mqtt_publish_raw_message(&publisher_tx, &topic_base, &msg.source, &msg_str);
 
-        //println!("{:?} - {}", msg.source, &msg_str);
+        // Handle specific message types
+        match msg_type {
+            "rapid_wind" => {
+                let topic = format!("{}/rapid", &topic_base);
+                mqtt_publish_message(&publisher_tx, &topic, &msg_str);
+            }
+            mt if mt.ends_with("_status") => {
+                let topic = format!("{}/status", &topic_base);
+                mqtt_publish_message(&publisher_tx, &topic, &msg_str);
+            }
+            mt if mt.starts_with("obs_") => {
+                if ws_connected.load(Ordering::SeqCst) && msg.source == WFSource::UDP {
+                    // Ignore the UDP events if we're connected via WS
+                    continue;
+                }
+                let topic = format!("{}/obs", &topic_base);
+                mqtt_publish_message(&publisher_tx, &topic, &msg_str);
+            }
+            mt if mt.starts_with("evt_") => {
+                match mt {
+                    "evt_strike" => {
+                        if ws_connected.load(Ordering::SeqCst) && msg.source == WFSource::UDP {
+                            // Ignore the UDP events if we're connected via WS
+                            continue;
+                        }
+                    }
+                    "evt_precip" => {
+                        if msg.source == WFSource::WS {
+                            // Ignore the WS event and always use UDP event
+                            continue;
+                        }
+                    }
+                    _ => { warn!("Unknown evt message type, ignoring. ({})", mt); continue; }
+                }
+                let topic = format!("{}/evt", &topic_base);
+                mqtt_publish_message(&publisher_tx, &topic, &msg_str);
+            }
+            _ => (),
+        }
     }
 }
 
@@ -124,16 +160,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         password: Some(String::from(MQTT_PASS)),
         client_id: Some(String::from(MQTT_CLIENT_ID)),
     };
-    
+
     // Message types to ignore
+    #[allow(unused_mut)]
     let mut ignored_msg_types: Vec<String> = Vec::new();
-    ignored_msg_types.push(String::from("rapid_wind"));
-    ignored_msg_types.push(String::from("light_debug"));
 
     let ws_args = WsArgs {
         auth_method: WFAuthMethod::AUTHTOKEN(String::from(WF_AUTH_TOKEN)),
-        station_id: None,
-        device_id: Some(WF_DEVICE_ID),
+        station_id: Some(WF_STATION_ID),
+        device_ids: None,
     };
 
     // Spawn tasks for the collectors / consumer

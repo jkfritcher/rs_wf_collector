@@ -5,16 +5,11 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, delay_for};
 
 use mqtt_async_client::{
-    client::{
-        Client,
-        KeepAlive,
-        Publish as PublishOpts,
-        QoS,
-    },
+    client::{Client, KeepAlive, Publish as PublishOpts, QoS},
     Result,
 };
 
-use crate::common::{MqttArgs,WFSource};
+use crate::common::{MqttArgs, WFSource};
 
 #[allow(unused_imports)]
 use log::{trace, debug, info, warn, error};
@@ -39,25 +34,21 @@ fn client_from_args(args: MqttArgs) -> Result<Client> {
 }
 
 pub fn mqtt_publish_raw_message(publisher_tx: &mpsc::UnboundedSender<(String, String)>,
-                                topic_base: String, msg_source: WFSource, msg_str: &str) {
+                                topic_base: &str, msg_source: &WFSource, msg_str: &str) {
     let topic_suffix = match msg_source {
-        WFSource::UDP => {
-            "udp_raw"
-        },
-        WFSource::WS => {
-            "ws_raw"
-        }
+        WFSource::UDP => "udp_raw",
+        WFSource::WS => "ws_raw",
     };
     let msg_topic = format!("{}/{}", topic_base, topic_suffix);
 
-    mqtt_publish_message(&publisher_tx, msg_topic, &msg_str);
+    mqtt_publish_message(&publisher_tx, &msg_topic, &msg_str);
 }
 
 pub fn mqtt_publish_message(publisher_tx: &mpsc::UnboundedSender<(String, String)>,
-                           msg_topic: String, msg_str: &str) {
-    match publisher_tx.send((msg_topic, String::from(msg_str))) {
+                            msg_topic: &str, msg_str: &str) {
+    match publisher_tx.send((msg_topic.to_string(), String::from(msg_str))) {
         Err(err) => { error!("Failed to add message to publisher_tx: {}", err); },
-        Ok(()) => ()
+        Ok(()) => (),
     }
 }
 
@@ -67,21 +58,16 @@ pub async fn mqtt_publisher(mut publisher_rx: mpsc::UnboundedReceiver<(String, S
         Err(err) => { error!("Failed to build mqtt client: {}", err); process::abort(); }
     };
 
-    loop {
-        match client.connect().await {
-            Err(err) => {
-                error!("Failed to connect to mqtt server: {}", err);
-                delay_for(Duration::from_secs(1)).await;
-            },
-            Ok(()) => { break; }
-        };
+    while let Err(err) = client.connect().await {
+        error!("Failed to connect to mqtt server: {}", err);
+        delay_for(Duration::from_secs(1)).await;
     }
 
     while let Some((topic, payload)) = publisher_rx.recv().await {
-        debug!("Received message: {} | {}", topic, payload);
+        trace!("Received message: {} | {}", topic, payload);
         let mut p = PublishOpts::new(topic, payload.as_bytes().to_vec());
-        p.set_qos(QoS::AtMostOnce)
-         .set_retain(true);
+        p.set_qos(QoS::AtMostOnce);
+        p.set_retain(false);
         match client.publish(&p).await {
             Err(err) => { error!("Failed to publish message: {}", err); },
             Ok(()) => ()

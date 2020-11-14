@@ -21,4 +21,6 @@ chrono = "0.4"
 futures = "0.3"
 futures-util = "0.3"
 url = "2.1"
-mqtt-async-client = { git = "https://github.com/fluffysquirrels/mqtt-async-client-rs", rev = "6010ac6" }
+mqtt-async-client = "0.1"
+lazy_static = "1.4"
+reqwest = "0.10"

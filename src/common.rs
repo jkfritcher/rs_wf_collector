@@ -1,4 +1,4 @@
-#[derive(Debug,Default)]
+#[derive(Debug, Default)]
 pub struct MqttArgs {
     pub hostname: String,
     pub port: u16,
@@ -11,10 +11,10 @@ pub struct MqttArgs {
 pub struct WsArgs {
     pub auth_method: WFAuthMethod,
     pub station_id: Option<u32>,
-    pub device_id: Option<u32>,
+    pub device_ids: Option<Vec<u32>>,
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum WFSource {
     UDP,
     WS,
