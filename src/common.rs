@@ -1,3 +1,6 @@
+// Copyright (c) 2020, Jason Fritcher <jkf@wolfnet.org>
+// All rights reserved.
+
 #[derive(Debug, Default)]
 pub struct MqttArgs {
     pub hostname: String,

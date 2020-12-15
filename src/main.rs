@@ -1,4 +1,10 @@
-use std::{error::Error, net::IpAddr, str, sync::atomic::Ordering};
+// Copyright (c) 2020, Jason Fritcher <jkf@wolfnet.org>
+// All rights reserved.
+
+use std::{env, error::Error, net::IpAddr, str, sync::atomic::Ordering};
+use getopts::{Matches, Options};
+
+use simple_logger::SimpleLogger;
 
 use tokio::sync::mpsc;
 
@@ -8,6 +14,7 @@ use serde_json::Value;
 
 #[allow(unused_imports)]
 use log::{trace, debug, info, warn, error};
+use log::LevelFilter;
 
 mod common;
 mod mqtt;
@@ -19,16 +26,11 @@ use udp::udp_collector;
 use websocket::{websocket_collector,get_ws_connected};
 
 // WeatherFlow constants
-const WF_API_KEY: &str = "20c70eae-e62f-4d3b-b3a4-8586e90f3ac8";
-const WF_AUTH_TOKEN: &str = "12345678-1234-1234-1234-123456789abc";
-const WF_STATION_ID: u32 = 690;
+const WF_DEFAULT_API_KEY: &str = "20c70eae-e62f-4d3b-b3a4-8586e90f3ac8";
 
-// MQTT args - to be replaced by cli args
-const MQTT_HOST: &str = "10.1.1.1";
-const MQTT_PORT: u16 = 1883;
-const MQTT_USER: &str = "username";
-const MQTT_PASS: &str = "password";
-const MQTT_CLIENT_ID: &str = "client-id";
+// MQTT arg defaults
+const MQTT_DEFAULT_HOST: &str = "localhost";
+const MQTT_DEFAULT_PORT: u16 = 1883;
 
 
 fn get_hub_sn_from_msg(msg_obj: &serde_json::Value) -> Option<&str> {
@@ -138,38 +140,125 @@ async fn message_consumer(mut collector_rx: mpsc::UnboundedReceiver<WFMessage>,
     }
 }
 
+fn print_usage_and_exit(program: &str, opts: Options) -> ! {
+    let brief = format!("Usage: {} [options]", program);
+    print!("{}", opts.usage(&brief));
+    std::process::exit(-1);
+}
+
+fn parse_arguments(input: Vec<String>) -> Matches {
+    let program = &input[0];
+
+    // Build options
+    let mut opts = Options::new();
+    opts.optflag("h", "help", "Print usage");
+    opts.optflagmulti("d", "debug", "Enable debug logging, multiple times for trace level");
+    opts.optopt("s", "senders", "Comma separated list of allowed ip addresses", "SENDER[,SENDER]");
+    opts.optopt("t", "token", "Auth Token for WeatherFlow APIs", "TOKEN");
+    opts.optopt("k", "key", "API Key for WeatherFlow APIs", "KEY");
+    opts.reqopt("i", "station-id", "Station ID for WeatherFlow APIs", "STATION-ID");
+
+    // MQTT options
+    opts.optopt("", "mqtt-host", "MQTT Broker host name, default localhost", "HOST");
+    opts.optopt("", "mqtt-port", "MQTT Broker port, default 1883", "PORT");
+    opts.optopt("", "mqtt-user", "MQTT Broker auth user name", "USER");
+    opts.optopt("", "mqtt-password", "MQTT Broker auth password", "PASSWORD");
+    opts.optopt("", "mqtt-client-id", "MQTT Broker client id", "CLIENT-ID");
+
+    // Parse arguments
+    let matches = match opts.parse(&input[1..]) {
+        Ok(m) => m,
+        Err(err) => {
+            println!("{}", err.to_string());
+            print_usage_and_exit(program, opts);
+        }
+    };
+
+    if matches.opt_present("h") {
+        print_usage_and_exit(&input[0], opts);
+    }
+
+    if matches.opt_present("t") && matches.opt_present("k") {
+        println!("Can not specify both a token and key for authentication, only one");
+        print_usage_and_exit(program, opts);
+    }
+
+    matches
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    simple_logger::init_with_level(log::Level::Debug).unwrap();
+    // Parse command line arguments
+    let args = parse_arguments(env::args().collect());
+
+    // Initialize logging
+    let log_level = match args.opt_count("d") {
+        0 => LevelFilter::Info,
+        1 => LevelFilter::Debug,
+        _ => LevelFilter::Trace,
+    };
+    SimpleLogger::new().with_level(log_level).init().unwrap();
+
+    // Vec of IpAddrs of senders we're interested in
+    let mut senders: Vec<IpAddr> = Vec::new();
+    match args.opt_str("s") {
+        Some(senders_str) => {
+            for sender in senders_str.split(",") {
+                senders.push(sender.parse()?);
+            }
+        },
+        None => ()
+    }
+
+    // Message types to ignore
+    #[allow(unused_mut)]
+    let mut ignored_msg_types: Vec<String> = Vec::new();
+
+    // Collect args for MQTT
+    let mqtt_host = match args.opt_str("mqtt-host") {
+        Some(host) => host,
+        None => String::from(MQTT_DEFAULT_HOST),
+    };
+    let mqtt_port = match args.opt_str("mqtt-port") {
+        Some(port) => port.parse::<u16>().expect("mqtt-port is not valid, only integers 0-65535 are valid."),
+        None => MQTT_DEFAULT_PORT,
+    };
+    let mqtt_args = MqttArgs {
+        hostname: mqtt_host,
+        port: mqtt_port,
+        username: args.opt_str("mqtt-user"),
+        password: args.opt_str("mqtt-password"),
+        client_id: args.opt_str("mqtt-client-id"),
+    };
+
+    let auth_method;
+    if args.opt_present("t") {
+        auth_method = WFAuthMethod::AUTHTOKEN(args.opt_str("t").unwrap());
+    } else {
+        let key = match args.opt_str("k") {
+            Some(key) => key,
+            None => {
+                info!("No auth token or API Key was specified, using public development API Key.");
+                String::from(WF_DEFAULT_API_KEY)
+            },
+        };
+        auth_method = WFAuthMethod::APIKEY(key);
+    }
+    let station_id = match args.opt_str("i") {
+        Some(station_id) => station_id.parse::<u32>().expect("station-id is not valid, only 32-bit integers are valid."),
+        None => panic!("This should not be reached."),
+    };
+    let ws_args = WsArgs {
+        auth_method: auth_method,
+        station_id: Some(station_id),
+        device_ids: None,
+    };
 
     // Channel for consumer to processor messaging
     let (collector_tx, consumer_rx) = mpsc::unbounded_channel::<WFMessage>();
 
     // Channel to mqtt publishing task
     let (publisher_tx, publisher_rx) = mpsc::unbounded_channel::<(String, String)>();
-
-    // Vec of IpAddrs of senders we're interested in
-    let mut senders: Vec<IpAddr> = Vec::new();
-    senders.push("10.1.3.4".parse()?);
-
-    // Collect args for MQTT
-    let mqtt_args = MqttArgs {
-        hostname: String::from(MQTT_HOST),
-        port: MQTT_PORT,
-        username: Some(String::from(MQTT_USER)),
-        password: Some(String::from(MQTT_PASS)),
-        client_id: Some(String::from(MQTT_CLIENT_ID)),
-    };
-
-    // Message types to ignore
-    #[allow(unused_mut)]
-    let mut ignored_msg_types: Vec<String> = Vec::new();
-
-    let ws_args = WsArgs {
-        auth_method: WFAuthMethod::AUTHTOKEN(String::from(WF_AUTH_TOKEN)),
-        station_id: Some(WF_STATION_ID),
-        device_ids: None,
-    };
 
     // Spawn tasks for the collectors / consumer
     let udp_task = tokio::spawn(udp_collector(collector_tx.clone(), senders));

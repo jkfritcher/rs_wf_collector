@@ -1,3 +1,5 @@
+// Copyright (c) 2020, Jason Fritcher <jkf@wolfnet.org>
+// All rights reserved.
 
 use std::process;
 

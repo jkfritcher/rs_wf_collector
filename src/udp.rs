@@ -1,3 +1,6 @@
+// Copyright (c) 2020, Jason Fritcher <jkf@wolfnet.org>
+// All rights reserved.
+
 use std::net::IpAddr;
 
 use tokio::net::UdpSocket;

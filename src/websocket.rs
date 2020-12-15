@@ -1,3 +1,6 @@
+// Copyright (c) 2020, Jason Fritcher <jkf@wolfnet.org>
+// All rights reserved.
+
 use std::{
     str,
     sync::{
@@ -30,7 +33,7 @@ const WF_REST_BASE_URL: &str = "https://swd.weatherflow.com/swd/rest";
 const WF_WS_URL: &str = "wss://ws.weatherflow.com/swd/data";
 
 lazy_static! {
-    static ref WS_CONNECTED: Arc<AtomicBool> = { Arc::new(AtomicBool::new(false)) };
+    static ref WS_CONNECTED: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 }
 
 pub fn get_ws_connected() -> Arc<AtomicBool> {
