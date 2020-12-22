@@ -1,1 +1,138 @@
-This is my README, plz 2 fill me out.
+This is a UDP and WebSocket data collector for WeatherFlow Smart Weather
+stations.
+
+After collecting messages from the channels, the best options are pushed to a
+series of MQTT topics for consumption by other systems. Depending on the
+connected state of the WebSocket channel, some messages will come from there,
+and others will come from the UDPmessages.
+
+WS vs UDP
+
+The primary split is based around the observations and lightning events. If
+the WS channels if connected, evt_strike and obs_* received via UDP will be
+ignored, and instead we will wait for those events to be echo'ed back to us
+via the WS channel.
+
+For the evt_strike messages we do this for two primary reasons. This lets
+WeatherFlow's cloud eliminate false positives and also enables reception of
+the crowd sourced lightning strike events occurring nearby.
+
+For the obs_* messages, we do this primarily to receive extra data that
+WeatherFlow's cloud attaches to the messages.
+
+For both message types, if the WS channel is not connected, then we fallback
+to the UDP data and pass it on, as-is.
+
+
+Build Instructions
+
+Requirements:
+* Rust v1.47 or higher
+
+Building is simple, once rust is installed, run the following command
+
+Debug Build
+
+$ cargo build
+
+Release Build
+
+$ cargo build --release
+
+After the build completes, the built executable will be located at the
+following location
+
+Debug Build
+
+target/debug/wf_collector_rs
+
+Release Build
+
+target/release/wf_collector_rs
+
+
+An installer hasn't been written, so copy that binary to your favorite place.
+
+An example config file is in the base directory, as wf_collector.cfg. Copy that
+to your favorite place for config files and modify as indicated below.
+
+
+Configuration
+
+The configuration file is a simple yaml based format that uses name/value
+pairs for options.
+
+Two options are required to be set, your station id, as well as either an Auth
+Token, or an API Key. The auth token and api key are used to authenticate
+requests to WeatherFlow's REST API and WebSocket services.
+
+If you don't have an API Key from WeatherFlow, you will need to get a Personal
+Access Token to authenticate with. See step 2 on the following page and follow
+the directions to get a Personal Access Token. This collector does not support
+using OAuth tokens.
+
+https://weatherflow.github.io/Tempest/api/
+
+If you're running your MQTT broker on the same host, and don't require a user
+or password for authentication, then configuration is done. 
+
+If you need to set MQTT broker parameters, mqtt_hostname and mqtt_port control
+the host and port that the collector connects to. mqtt_username and
+mqtt_password let you set authentication details. If you want to use a custom
+client_id on the MQTT connection, then mqtt_client_id can be used to set it.
+
+One final bit of configuration, the collector can filter on the IP addresses
+of the senders and can be configured to only accept from specified addresses.
+If that is desired, a senders value with a list of acceptable addresses can
+be specified as so:
+
+senders:
+  - 1.2.3.4
+  - 2.3.4.5
+
+
+Running
+
+Once the configuration file has been updated, running the collector is as
+follows
+
+$ wf_collector_rs <path to config file>
+
+Log messages appear on standard output and default to info level logging.
+Debug level logs can be enabled by adding a -d flag, and even more detailed
+trace level logs can be enabled with -dd. Below demonstrates using these
+flags.
+
+Debug logging
+$ wf_collector_rs -d <path to config file>
+
+Trace logging
+$ wf_collector_rs -dd <path to config file>
+
+
+MQTT topics
+
+There are a variety of topics that messages are published to. For the time
+being, they are statically configured, but I am planning on making them
+configurable in a future release. The collector extracts the serial number of
+the Hub of the station and forms a base topic name like the following:
+
+weatherflow/HB-12345678
+
+This makes it easy to subscribe to a specific station's topics and if multiple
+stations are running, they are logically separated. Underneath the base topic
+are 2 raw message topics, as well as the message type topics:
+
+Raw topics - unprocessed messages from each message source
+<base>/udp_raw
+<base>/ws_raw
+
+Sorted topics
+<base>/rapid    Rapid wind messages
+<base>/evt      Precip and Lightning messages
+<base>/obs      Observation messages
+<base>/status   Hub and Device status messages
+
+Debug messages in the form of type *_debug are currently filtered out and not
+passed on to any message topic. If these messages are of interest, I can add
+them to the udp_raw topic, as well as a separate <base>/debug topic.
