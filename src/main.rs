@@ -1,265 +1,123 @@
-use std::{
-    error::Error,
-    net::IpAddr,
-    time::SystemTime,
-    str,
-};
+// Copyright (c) 2020, Jason Fritcher <jkf@wolfnet.org>
+// All rights reserved.
 
-use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
-use tokio::time::{
-    delay_for,
-    Duration
-};
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::protocol::Message,
-};
+use std::{env, error::Error, process, str};
 
-use futures_util::{SinkExt, StreamExt};
+use getopts::{Matches, Options};
+use simple_logger::SimpleLogger;
+
 use futures::join;
+use tokio::sync::mpsc;
 
-use serde_json::json;
-use serde_json::Value;
-
+use log::LevelFilter;
+#[allow(unused_imports)]
 use log::{trace, debug, info, warn, error};
-use simple_logger;
 
-#[derive(Debug)]
-enum WFSource {
-    UDP,
-    WS,
+mod common;
+mod config;
+mod messages;
+mod mqtt;
+mod udp;
+mod websocket;
+use common::{MqttArgs, WFAuthMethod, WFMessage, WsArgs};
+use config::new_config_from_yaml_file;
+use messages::message_consumer;
+use mqtt::mqtt_publisher;
+use udp::udp_collector;
+use websocket::websocket_collector;
+
+
+fn print_usage_and_exit(program: &str, opts: Options) -> ! {
+    let brief = format!("Usage: {} [options] <config file name>", program);
+    print!("{}", opts.usage(&brief));
+    process::exit(-1);
 }
 
-#[derive(Debug)]
-struct WFMessage {
-    source: WFSource,
-    message: Vec<u8>,
-}
+fn parse_arguments(input: Vec<String>) -> (Matches, String) {
+    let program = &input[0];
 
-// WeatherFlow constants
-const WF_API_KEY: &str = "20c70eae-e62f-4d3b-b3a4-8586e90f3ac8";
-const WF_REST_BASE_URL: &str = "https://swd.weatherflow.com/swd/rest/";
-const WF_WS_URL: &str = "wss://ws.weatherflow.com/swd/data?api_key=";
-const WF_STATION_ID: u16 = 19992;
-const WF_DEVICE_ID: u32 = 67708;
+    // Build options
+    let mut opts = Options::new();
+    opts.optflag("h", "help", "Print usage");
+    opts.optflagmulti("d", "debug", "Enable debug logging, multiple times for trace level");
 
-
-async fn udp_collector(sender: mpsc::UnboundedSender<WFMessage>,
-                      sources: Vec<IpAddr>) {
-    let listen_addr = "0.0.0.0:50222".to_string();
-    let mut socket = UdpSocket::bind(&listen_addr).await.expect("Failed to create UDP listener socket!");
-
-    // Buffer for received packets
-    let mut buf = vec![0; 1024];
-    loop {
-        let (size, from) = socket.recv_from(&mut buf).await.expect("Error from recv_from.");
-
-        // Check recevied packet against approved sources
-        if !sources.is_empty() && !sources.iter().any(|&source| source == from.ip()) {
-            warn!("Ignoring packet from {}, sender is not approved!", from.ip());
-            continue;
+    // Parse arguments
+    let matches = match opts.parse(&input[1..]) {
+        Ok(m) => m,
+        Err(err) => {
+            println!("{}", err.to_string());
+            print_usage_and_exit(program, opts);
         }
+    };
 
-        // Build message to send via the channel
-        let msg = WFMessage {
-            source: WFSource::UDP,
-            message: buf[..size].to_vec(),
-        };
-        match sender.send(msg) {
-            Err(err) => { error!("Failed to add message to sender: {}", err); },
-            Ok(()) => ()
-        }
+    if matches.opt_present("h") {
+        print_usage_and_exit(program, opts);
     }
-}
 
-async fn websocket_collector(sender: mpsc::UnboundedSender<WFMessage>) {
-    let url_str = format!("{}{}", WF_WS_URL, WF_API_KEY);
-    let device_id = WF_DEVICE_ID; // TODO Lookup device id via station id
-    let mut reconnect_delay: u64 = 0;
-
-    loop {
-        // Delay before reconnecting if there were previous errors
-        if reconnect_delay > 0 {
-            delay_for(Duration::from_secs(reconnect_delay)).await;
-            reconnect_delay = if reconnect_delay < 30 { reconnect_delay * 2 } else { 30 };
-        }
-
-        // Use current epoch time as request id
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("Failed to get current epoch time")
-            .as_secs();
-        // json to send as request
-        let ws_request = json!({"type":"listen_start","device_id":device_id,"id":now.to_string()}).to_string();
-
-        // Connect to WS endpoint
-        let mut ws_stream = match connect_async(&url_str).await {
-            Ok((ws_stream, ws_response)) => {
-                let code = ws_response.status().as_u16();
-                if code != 101 {
-                    error!("Unexpected response code received: {}", code);
-                    reconnect_delay = if reconnect_delay == 0 { 1 } else { reconnect_delay };
-                    continue;
-                }
-                ws_stream
-            },
-            Err(err) => {
-                error!("Error connecting to WebSocket server: {}", err);
-                reconnect_delay = if reconnect_delay == 0 { 1 } else { reconnect_delay };
-                continue;
-            }
-        };
-
-        // Get initial message from server
-        let msg = match ws_stream.next().await {
-            Some(Ok(msg)) => msg,
-            Some(Err(err)) => {
-                error!("Error occurred reading next message: {}", err);
-                match ws_stream.close(None).await {
-                    Err(err) => { error! ("Error closing ws_stream: {}", err); },
-                    Ok(_) => (),
-                };
-                reconnect_delay = if reconnect_delay == 0 { 1 } else { reconnect_delay };
-                continue;
-            },
-            None => {
-                error!("End of stream found on WS stream. Shutting down stream.");
-                match ws_stream.close(None).await {
-                    Err(err) => { error! ("Error closing ws_stream: {}", err); },
-                    Ok(_) => (),
-                };
-                reconnect_delay = if reconnect_delay == 0 { 1 } else { reconnect_delay };
-                continue;
-            }
-        };
-        trace!("WS Message received: {}", msg);
-        match msg.into_text() {
-            Ok(txt) => {
-                if !txt.contains("connection_opened") {
-                    error!("WebSocket connection not successful: {}", txt);
-                    match ws_stream.close(None).await {
-                        Err(err) => { error! ("Error closing ws_stream: {}", err); },
-                        Ok(_) => (),
-                    };
-                    reconnect_delay = if reconnect_delay == 0 { 1 } else { reconnect_delay };
-                    continue;
-                }
-            },
-            Err(err) => {
-                error!("Error converting message into string: {}", err);
-                continue;
-            }
-        };
-        // Reset reconnect delay
-        reconnect_delay = 0;
-
-        // Connection opened, request station observations
-        match ws_stream.send(Message::text(ws_request)).await {
-            Err(err) => {
-                error!("Error received sending station obs request: {}", err);
-                match ws_stream.close(None).await {
-                    Err(err) => { error! ("Error closing ws_stream: {}", err); },
-                    Ok(_) => (),
-                };
-                reconnect_delay = 1;
-                continue;
-            },
-            Ok(()) => (),
-        };
-
-        while let Some(msg) = ws_stream.next().await {
-            let msg = match msg {
-                Ok(msg) => msg,
-                Err(err) => {
-                    error!("WebSocket receive error: {:?}", err);
-                    continue;
-                }
-            };
-            trace!("WS Message received: {}", msg);
-            if msg.is_close() {
-                info!("WebSocket connection closed: {}", msg);
-                break;
-            }
-            if !(msg.is_text()) {
-                warn!("WebSocket non-text message received: {}", msg);
-                continue;
-            }
-            let msg = WFMessage {
-                source: WFSource::WS,
-                message: msg.into_data(),
-            };
-            match sender.send(msg) {
-                Err(err) => { error!("Failed to add message to sender: {}", err); },
-                Ok(()) => ()
-            }
-        }
+    if matches.free.is_empty() {
+        println!("Must specify a config file name");
+        print_usage_and_exit(program, opts);
     }
-}
+    let config_name = matches.free[0].clone();
 
-async fn message_consumer(mut receiver: mpsc::UnboundedReceiver<WFMessage>,
-                           ignored_msg_types: Vec<String>) {
-    // Wait for messages from the consumers to process
-    while let Some(msg) = receiver.recv().await {
-        let msg_str = match str::from_utf8(&msg.message) {
-            Err(err) => {
-                error!("Error in str::from_utf8, ignoring message: {}", err);
-                continue;
-            },
-            Ok(msg) => msg,
-        };
-        let msg_json: Value = match serde_json::from_str(&msg_str) {
-            Err(err) => {
-                error!("Error parsing json, skipping message: {}", err);
-                continue;
-            },
-            Ok(msg) => msg,
-        };
-        if !msg_json.is_object() {
-            warn!("{:?} message not valid, skipping", msg.source);
-            continue;
-        }
-
-        let msg_type = msg_json.as_object().unwrap()
-                               .get("type").unwrap()
-                               .as_str().unwrap();
-
-        // Ignore message types we're not interested in
-        if ignored_msg_types.iter().any(|x| x == &msg_type ) {
-            continue;
-        }
-
-        println!("{:?} - {}", msg.source, &msg_str);
-    }
+    (matches, config_name)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    simple_logger::init_with_level(log::Level::Debug).unwrap();
+    // Parse command line arguments
+    let (args, config_name) = parse_arguments(env::args().collect());
 
-    // Channel for consumer to processor messaging
-    let (tx, rx) = mpsc::unbounded_channel::<WFMessage>();
+    // Initialize logging
+    let log_level = match args.opt_count("d") {
+        0 => LevelFilter::Info,
+        1 => LevelFilter::Debug,
+        _ => LevelFilter::Trace,
+    };
+    SimpleLogger::new().with_level(log_level).init().unwrap();
 
-    // Vec of IpAddrs of senders we're interested in
-    let mut senders: Vec<IpAddr> = Vec::new();
-    //senders.push("10.1.3.3".parse()?);
+    // Load config file
+    let config = new_config_from_yaml_file(&config_name);
 
     // Message types to ignore
+    #[allow(unused_mut)]
     let mut ignored_msg_types: Vec<String> = Vec::new();
-    ignored_msg_types.push("rapid_wind".to_string());
-    ignored_msg_types.push("light_debug".to_string());
 
-    // Spawn tasks for the consumers
-    let udp_task = tokio::spawn(udp_collector(tx.clone(), senders));
-    let ws_task = tokio::spawn(websocket_collector(tx.clone()));
-    // rx ownership transfer to the spawned task
-    let msg_consumer_task = tokio::spawn(message_consumer(rx, ignored_msg_types));
+    // Collect args for MQTT
+    let mqtt_args = MqttArgs {
+        hostname: config.mqtt_hostname,
+        port: config.mqtt_port,
+        username: config.mqtt_username,
+        password: config.mqtt_password,
+        client_id: config.mqtt_client_id,
+    };
 
-    // Let go of our tx reference to the channel.
-    drop(tx);
+    let auth_method;
+    if config.token.is_some() {
+        auth_method = WFAuthMethod::AUTHTOKEN(config.token.unwrap());
+    } else {
+        auth_method = WFAuthMethod::APIKEY(config.api_key.unwrap());
+    }
+    let ws_args = WsArgs {
+        auth_method,
+        station_id: Some(config.station_id),
+        device_ids: None,
+    };
+
+    // Channel for consumer to processor messaging
+    let (collector_tx, consumer_rx) = mpsc::unbounded_channel::<WFMessage>();
+
+    // Channel to mqtt publishing task
+    let (publisher_tx, publisher_rx) = mpsc::unbounded_channel::<(String, String)>();
+
+    // Spawn tasks for the collectors / consumer
+    let udp_task = tokio::spawn(udp_collector(collector_tx.clone(), config.senders));
+    let ws_task = tokio::spawn(websocket_collector(collector_tx, ws_args));
+    let msg_consumer_task = tokio::spawn(message_consumer(consumer_rx, publisher_tx, ignored_msg_types));
+    let mqtt_publisher_task = tokio::spawn(mqtt_publisher(publisher_rx, mqtt_args));
 
     // Wait for spawned tasks to complete, which should not occur, so effectively hang the task.
-    join!(udp_task, ws_task, msg_consumer_task);
+    join!(udp_task, ws_task, msg_consumer_task, mqtt_publisher_task);
 
     Ok(())
 }
