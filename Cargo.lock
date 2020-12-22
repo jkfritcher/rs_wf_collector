@@ -961,30 +961,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rs_wf_collector"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "futures",
- "futures-util",
- "getopts",
- "lazy_static",
- "log",
- "mqtt-async-client",
- "reqwest",
- "serde",
- "serde_derive",
- "serde_json",
- "serde_yaml",
- "simple_logger",
- "tokio",
- "tokio-native-tls",
- "tokio-tungstenite",
- "tungstenite",
- "url",
-]
-
-[[package]]
 name = "rustls"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1539,6 +1515,30 @@ checksum = "ab146130f5f790d45f82aeeb09e55a256573373ec64409fc19a6fb82fb1032ae"
 dependencies = [
  "ring",
  "untrusted",
+]
+
+[[package]]
+name = "wf_collector_rs"
+version = "0.0.1"
+dependencies = [
+ "chrono",
+ "futures",
+ "futures-util",
+ "getopts",
+ "lazy_static",
+ "log",
+ "mqtt-async-client",
+ "reqwest",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "serde_yaml",
+ "simple_logger",
+ "tokio",
+ "tokio-native-tls",
+ "tokio-tungstenite",
+ "tungstenite",
+ "url",
 ]
 
 [[package]]

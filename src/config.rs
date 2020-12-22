@@ -2,6 +2,7 @@
 // All rights reserved.
 
 use std::{fs::File, io::BufReader, net::IpAddr};
+
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -19,7 +20,7 @@ pub struct Config {
     pub mqtt_port: u16,
     pub mqtt_username: Option<String>,
     pub mqtt_password: Option<String>,
-    pub mqtt_client_id: Option<String>
+    pub mqtt_client_id: Option<String>,
 }
 
 pub fn new_config_from_yaml_file(config_file: &str) -> Config {

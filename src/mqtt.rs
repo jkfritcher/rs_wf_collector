@@ -4,17 +4,17 @@
 use std::process;
 
 use tokio::sync::mpsc;
-use tokio::time::{Duration, delay_for};
+use tokio::time::{delay_for, Duration};
 
 use mqtt_async_client::{
     client::{Client, KeepAlive, Publish as PublishOpts, QoS},
     Result,
 };
 
-use crate::common::{MqttArgs, WFSource};
-
 #[allow(unused_imports)]
 use log::{trace, debug, info, warn, error};
+
+use crate::common::{MqttArgs, WFSource};
 
 fn client_from_args(args: MqttArgs) -> Result<Client> {
     let mut b = Client::builder();
