@@ -1,0 +1,14 @@
+[Unit]
+Description=WeatherFlow UDP/WS data collector
+After=network.target mosquitto.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+Restart=always
+RestartSec=1
+User=wf_collector
+ExecStart=/opt/wf_collector/wf_collector /opt/wf_collector/wf_collector.conf
+
+[Install]
+WantedBy=multi-user.target
