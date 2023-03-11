@@ -2,7 +2,7 @@
 name = "wf_collector_rs"
 description = "UDP and WebSocket data collector for WeatherFlow Smart Weather stations."
 license = "BSD-3-Clause"
-version = "0.0.1"
+version = "0.1.0"
 authors = ["Jason Fritcher <jkf@wolfnet.org>"]
 edition = "2018"
 
