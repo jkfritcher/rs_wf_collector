@@ -8,6 +8,7 @@ pub struct MqttArgs {
     pub username: Option<String>,
     pub password: Option<String>,
     pub client_id: Option<String>,
+    pub topic_base: String,
 }
 
 #[derive(Debug)]

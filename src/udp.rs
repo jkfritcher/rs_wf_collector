@@ -11,17 +11,24 @@ use log::{trace, debug, info, warn, error};
 
 use crate::common::{WFMessage, WFSource};
 
-pub async fn udp_collector(collector_tx: mpsc::UnboundedSender<WFMessage>,
-    sources: Vec<IpAddr>) {
+pub async fn udp_collector(
+    collector_tx: mpsc::UnboundedSender<WFMessage>,
+    sources: Vec<IpAddr>,
+) -> ! {
     let listen_addr = "0.0.0.0:50222".to_string();
-    let mut socket = UdpSocket::bind(&listen_addr).await.expect("Failed to create UDP listener socket!");
+    let socket = UdpSocket::bind(&listen_addr)
+        .await
+        .expect("Failed to create UDP listener socket!");
 
     info!("UDP listener successfully opened.");
 
     // Buffer for received packets
     let mut buf = vec![0u8; 1024];
     loop {
-        let (size, from) = socket.recv_from(&mut buf).await.expect("Error from recv_from.");
+        let (size, from) = socket
+            .recv_from(&mut buf)
+            .await
+            .expect("Error from recv_from.");
         trace!("Received packet from {}", from);
 
         // Check recevied packet against approved sources
@@ -35,9 +42,8 @@ pub async fn udp_collector(collector_tx: mpsc::UnboundedSender<WFMessage>,
             source: WFSource::UDP,
             message: buf[..size].to_vec(),
         };
-        match collector_tx.send(msg) {
-            Err(err) => { error!("Failed to add message to collector_tx: {}", err); },
-            Ok(()) => ()
+        if let Err(err) = collector_tx.send(msg) {
+            error!("Failed to add message to collector_tx: {}", err);
         }
     }
 }

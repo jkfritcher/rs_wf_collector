@@ -12,7 +12,7 @@ use std::{
 
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio::time::{delay_for, Duration};
+use tokio::time::{sleep, Duration};
 use tokio_tungstenite::{
     connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
 };
@@ -45,29 +45,31 @@ async fn get_device_ids_with_station_id(url_str: &str, station_id: u32) -> Optio
     info!("Requesting Device IDs for Station ID {}", station_id);
     let mut device_ids: Vec<u32> = Vec::new();
     let resp = match reqwest::get(url_str).await {
+        Ok(resp) => resp,
         Err(err) => {
             error!("Received error requesting device_ids: {}", err);
             return None;
         }
-        Ok(resp) => resp,
     };
     let resp_bytes = match resp.bytes().await {
+        Ok(resp_bytes) => resp_bytes,
         Err(err) => {
             error!("Error receiving response text: {}", err);
             return None;
         }
-        Ok(resp_bytes) => resp_bytes,
     };
     let resp_obj: JsonValue = match serde_json::from_slice(resp_bytes.as_ref()) {
+        Ok(resp_obj) => resp_obj,
         Err(err) => {
             error!("Error json decoding response: {}", err);
             return None;
         }
-        Ok(resp_obj) => resp_obj,
     };
     if resp_obj["status"]["status_code"] != 0 {
-        error!("Received error status: {} - {}", resp_obj["status"]["status_code"],
-                                                 resp_obj["status"]["status_message"]);
+        error!(
+            "Received error status: {} - {}",
+            resp_obj["status"]["status_code"], resp_obj["status"]["status_message"]
+        );
         return None;
     }
 
@@ -93,7 +95,9 @@ async fn get_device_ids_with_station_id(url_str: &str, station_id: u32) -> Optio
     Some(device_ids)
 }
 
-async fn websocket_connect(url_str: &str) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, String> {
+async fn websocket_connect(
+    url_str: &str
+) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, String> {
     // Connect to WS endpoint
     let mut ws_stream = match connect_async(url_str).await {
         Ok((ws_stream, ws_response)) => {
@@ -148,7 +152,10 @@ async fn websocket_connect(url_str: &str) -> Result<WebSocketStream<MaybeTlsStre
     Ok(ws_stream)
 }
 
-async fn websocket_send_listen_start(ws_stream: &mut WebSocketStream<MaybeTlsStream<TcpStream>>, device_ids: &[u32]) -> Result<(), String> {
+async fn websocket_send_listen_start(
+    ws_stream: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    device_ids: &[u32],
+) -> Result<(), String> {
     // Use current epoch time as request id
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -202,8 +209,12 @@ pub async fn websocket_collector(collector_tx: mpsc::UnboundedSender<WFMessage>,
         // Delay before reconnecting if there were previous errors
         ws_connected.store(false, Ordering::SeqCst);
         if reconnect_delay > 0 {
-            delay_for(Duration::from_secs(reconnect_delay.into())).await;
-            reconnect_delay = if reconnect_delay < 32 { reconnect_delay * 2 } else { 32 };
+            sleep(Duration::from_secs(reconnect_delay.into())).await;
+            reconnect_delay = if reconnect_delay < 32 {
+                reconnect_delay * 2
+            } else {
+                32
+            };
         }
 
         let ws_url_str = format!("{}?{}", WF_WS_URL, auth_uri_str);
@@ -211,9 +222,13 @@ pub async fn websocket_collector(collector_tx: mpsc::UnboundedSender<WFMessage>,
         debug!("Connection URL: {}", ws_url_str);
         let mut ws_stream = match websocket_connect(&ws_url_str).await {
             Err(_) => {
-                reconnect_delay = if reconnect_delay == 0 { 1 } else { reconnect_delay };
+                reconnect_delay = if reconnect_delay == 0 {
+                    1
+                } else {
+                    reconnect_delay
+                };
                 continue;
-            },
+            }
             Ok(ws_stream) => ws_stream,
         };
         // Reset reconnect delay
@@ -221,7 +236,10 @@ pub async fn websocket_collector(collector_tx: mpsc::UnboundedSender<WFMessage>,
 
         info!("WebSocket connected successfully.");
 
-        if websocket_send_listen_start(&mut ws_stream, &device_ids).await.is_err() {
+        if websocket_send_listen_start(&mut ws_stream, &device_ids)
+            .await
+            .is_err()
+        {
             reconnect_delay = 1;
             continue;
         }
@@ -239,7 +257,7 @@ pub async fn websocket_collector(collector_tx: mpsc::UnboundedSender<WFMessage>,
             };
             trace!("WS Message received: {}", msg);
             if msg.is_close() {
-                info!("WebSocket connection closed: {}", msg);
+                warn!("WebSocket connection closed: {}", msg);
                 break;
             }
             if !(msg.is_text()) {
@@ -250,9 +268,8 @@ pub async fn websocket_collector(collector_tx: mpsc::UnboundedSender<WFMessage>,
                 source: WFSource::WS,
                 message: msg.into_data(),
             };
-            match collector_tx.send(msg) {
-                Err(err) => { error!("Failed to add message to sender: {}", err); },
-                Ok(()) => (),
+            if let Err(err) = collector_tx.send(msg) {
+                error!("Failed to add message to sender: {}", err);
             }
         }
     }

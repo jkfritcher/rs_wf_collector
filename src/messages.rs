@@ -22,9 +22,12 @@ fn get_hub_sn_from_msg(msg_obj: &serde_json::Value) -> Option<&str> {
     }
 }
 
-pub async fn message_consumer(mut collector_rx: mpsc::UnboundedReceiver<WFMessage>,
-                              publisher_tx: mpsc::UnboundedSender<(String, String)>,
-                              ignored_msg_types: Vec<String>) {
+pub async fn message_consumer(
+    mut collector_rx: mpsc::UnboundedReceiver<WFMessage>,
+    publisher_tx: mpsc::UnboundedSender<(String, String)>,
+    ignored_msg_types: Vec<String>,
+    mqtt_topic_base: String,
+) {
     // Get WS connected reference
     let ws_connected = get_ws_connected();
 
@@ -37,7 +40,7 @@ pub async fn message_consumer(mut collector_rx: mpsc::UnboundedReceiver<WFMessag
             }
             Ok(msg) => msg,
         };
-        let msg_json: Value = match serde_json::from_str(&msg_str) {
+        let msg_json: Value = match serde_json::from_str(msg_str) {
             Err(err) => {
                 error!("Error parsing json, skipping message: {}", err);
                 continue;
@@ -48,9 +51,23 @@ pub async fn message_consumer(mut collector_rx: mpsc::UnboundedReceiver<WFMessag
             warn!("{:?} message is not an expected json object, skipping", msg.source);
             continue;
         }
-        let msg_obj = msg_json.as_object().unwrap();
+        let msg_obj = match msg_json.as_object() {
+            Some(msg_obj) => msg_obj,
+            None => {
+                warn!("msg_json is not an object, skipping.");
+                debug!("msg_json = {:?}", msg_json);
+                continue;
+            }
+        };
         let msg_type = match msg_obj.get("type") {
-            Some(msg_type) => msg_type.as_str().unwrap(),
+            Some(msg_type) => match msg_type.as_str() {
+                Some(msg_type) => msg_type,
+                None => {
+                    warn!("Received message with a non-string type field, skipping.");
+                    debug!("msg_type = {:?}", msg_type);
+                    continue;
+                }
+            },
             None => {
                 error!("type key was not found in message, skipping.");
                 debug!("msg_obj = {:?}", msg_obj);
@@ -59,34 +76,39 @@ pub async fn message_consumer(mut collector_rx: mpsc::UnboundedReceiver<WFMessag
         };
 
         // Ignore message types we're not interested in
-        if msg_type.ends_with("_debug") || msg_type == "ack" ||
-           ignored_msg_types.iter().any(|x| x == msg_type ) {
+        if msg_type.ends_with("_debug")
+            || msg_type == "ack"
+            || ignored_msg_types.iter().any(|x| x == msg_type)
+        {
             continue;
         }
 
         // Ignore cached WS summary messages
-        if msg.source == WFSource::WS &&
-           msg_obj.get("source").unwrap().as_str().unwrap() == "cache" {
-            debug!("Ignoring WS cached summary message");
-            continue;
+        if msg.source == WFSource::WS {
+            if let Some(msg_source) = msg_obj.get("source") {
+                if msg_source.as_str().unwrap_or("") == "cache" {
+                    debug!("Ignoring WS cached summary message");
+                    continue;
+                }
+            };
         }
 
         // Get the Hub serial number and make topic base
         let hub_sn = get_hub_sn_from_msg(&msg_json).unwrap();
-        let topic_base = format!("weatherflow/{}", hub_sn);
+        let topic_base = format!("{0}/{1}", mqtt_topic_base, hub_sn);
 
         // Publish raw message to mqtt
-        mqtt_publish_raw_message(&publisher_tx, &topic_base, &msg.source, &msg_str);
+        mqtt_publish_raw_message(&publisher_tx, &topic_base, &msg.source, msg_str);
 
         // Handle specific message types
         match msg_type {
             "rapid_wind" => {
                 let topic = format!("{}/rapid", &topic_base);
-                mqtt_publish_message(&publisher_tx, &topic, &msg_str);
+                mqtt_publish_message(&publisher_tx, &topic, msg_str);
             }
             mt if mt.ends_with("_status") => {
                 let topic = format!("{}/status", &topic_base);
-                mqtt_publish_message(&publisher_tx, &topic, &msg_str);
+                mqtt_publish_message(&publisher_tx, &topic, msg_str);
             }
             mt if mt.starts_with("obs_") => {
                 if ws_connected.load(Ordering::SeqCst) && msg.source == WFSource::UDP {
@@ -94,7 +116,7 @@ pub async fn message_consumer(mut collector_rx: mpsc::UnboundedReceiver<WFMessag
                     continue;
                 }
                 let topic = format!("{}/obs", &topic_base);
-                mqtt_publish_message(&publisher_tx, &topic, &msg_str);
+                mqtt_publish_message(&publisher_tx, &topic, msg_str);
             }
             mt if mt.starts_with("evt_") => {
                 match mt {
@@ -113,7 +135,7 @@ pub async fn message_consumer(mut collector_rx: mpsc::UnboundedReceiver<WFMessag
                     _ => { warn!("Unknown evt message type, ignoring. ({})", mt); continue; }
                 }
                 let topic = format!("{}/evt", &topic_base);
-                mqtt_publish_message(&publisher_tx, &topic, &msg_str);
+                mqtt_publish_message(&publisher_tx, &topic, msg_str);
             }
             _ => (),
         }

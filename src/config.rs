@@ -21,6 +21,8 @@ pub struct Config {
     pub mqtt_username: Option<String>,
     pub mqtt_password: Option<String>,
     pub mqtt_client_id: Option<String>,
+    #[serde(default = "Config::default_mqtt_topic_base")]
+    pub mqtt_topic_base: String,
 }
 
 pub fn new_config_from_yaml_file(config_file: &str) -> Config {
@@ -46,6 +48,10 @@ impl Config {
 
     fn default_mqtt_port() -> u16 {
         1883
+    }
+
+    fn default_mqtt_topic_base() -> String {
+        String::from("weatherflow")
     }
 
     fn default_senders() -> Vec<IpAddr> {
